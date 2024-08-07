@@ -6,19 +6,22 @@ pipeline {
       steps {
         echo 'Hello Sakk'
       }
+    }
     stage ('Build') {
       steps {
         echo 'Buildingggg'
       }
+    }
     stage ('Deploy') {
       steps {
         echo 'Deploying'
       }
+    }
     stage ('Test') {
       steps {
         echo 'Testing'
       }
     }
+    }
   }
-}
   
