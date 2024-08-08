@@ -1,0 +1,144 @@
+pipeline {
+    agent {
+        label "smartest8-sin-vdi"
+    }
+    options {
+        disableConcurrentBuilds()
+    }
+    environment {
+        ExecutionMode = 'offline'
+        modelFile = 'CCG6DF_93K/offline.model'
+		tp360Profile = 'tp360_profile/ReleaseCheckMainProfile_profile.tar.gz'
+        TestProgram = 'CCG6DF_CRI'
+        TestpgmRelativePath = 'CCG6DF_93K/src_wirelist_ccg6df_96bga/program/CCG6DF_CRI.prog'
+        SmartTestVer = '8.5.4.2'
+        artifactory_repo = 'gen-other-tti-tef-local/'
+        artifacts_url = 'https://artifactory.intra.infineon.com/artifactory/'
+        tp_proj = 'TFTP'
+        tp_repo = 'CCG6DF'
+        tp_branch = 'CLASS_PRGM_DEV'
+        tpgen_input_proj = 'TFTP'
+        tpgen_input_repo = 'CCG6DF'
+        tpgen_input_branch = 'master'
+        generator_mode = 'all'
+        device_name = 'CCG6DF'
+        forceDbd_gen = '0'
+        level_file = 'LevelSet_spreadsheet.xlsx'
+        override_sflow = 'false'
+        pingroup = 'pin_group_spreadsheet.xlsx'
+        prebind_setup = 'PreBindSetup.ods'
+        prog_variables_input = 'Test_Program_Variables.xlsx'
+        timing_file = 'timing_spreadsheet.xlsx'
+        tml_path = 'CCG6DF_93K/src/tml'
+        trd_file = '002-27931_CCG6DF_93K_700b4d4c873.xls'
+        utilityspec = 'UtilitySpec.xlsx'
+        wirelist = 'wirelist_CCG6DF.xlsx'
+        worksheet = 'wirelist_CCG6DF_96BGA'
+    }
+ 
+    stages {
+        stage('Checkout') {
+            steps    {
+                node('smartest8-sin-vdi') {
+                    checkout([$class: 'GitSCM',
+                        branches: [[name: 'CCG6DF_8.5_Class']],
+                        extensions: [[$class: 'CleanBeforeCheckout'],
+                            [$class: 'RelativeTargetDirectory', relativeTargetDir: './']],
+                        submoduleCfg: [],
+                        userRemoteConfigs: [[credentialsId: 'ifxjenktden_password',
+                            url: 'https://bitbucket.vih.infineon.com/scm/tftp/ccg6df.git']]])
+                    checkout([$class: 'GitSCM', 
+                        branches: [[name: 'master']], 
+                        extensions: [[$class: 'CleanBeforeCheckout'], 
+                            [$class: 'RelativeTargetDirectory', relativeTargetDir: './tpgen']], 
+                        userRemoteConfigs: [[credentialsId: 'ifxjenktden_password', 
+                            url: 'https://bitbucket.vih.infineon.com/scm/v93kst8lib/tpgen.git']]])
+                }
+            }
+        }
+ 
+        stage('Generate Program') {
+            steps {
+                node('smartest8-sin-vdi') {
+                    dir("${env.WORKSPACE}/tpgen") {
+                        sh "java -jar tpgen.jar all -lf ${env.WORKSPACE}/tpgen_input/${env.level_file} -tf ${env.WORKSPACE}/tpgen_input/${env.timing_file} -tml ${env.WORKSPACE}/${env.tml_path} -trd ${env.WORKSPACE}/tpgen_input/${env.trd_file} -dev ${env.device_name} -w ${env.WORKSPACE}/tpgen_input/${env.wirelist} -ws ${env.worksheet} -pg ${env.WORKSPACE}/tpgen_input/${env.pingroup} -setup ${env.WORKSPACE}/tpgen_input/${env.prebind_setup} -pvi ${env.WORKSPACE}/tpgen_input/${env.prog_variables_input} -u ${env.WORKSPACE}/tpgen_input/${env.utilityspec} -forceDbd ${env.forceDbd_gen} -o ${env.WORKSPACE}/CCG6DF_93K"
+                    }
+                }
+            }
+        }
+ 
+        stage('Program Audit') {
+            steps    {
+                node('smartest8-sin-vdi') {
+                    //sh "chmod +x -R ${env.WORKSPACE}"
+                    sh "git checkout CCG6DF_93K/src_bbtm_gen/common/flows/subs/IDD_TESTS.flow"
+                    sh "git checkout CCG6DF_93K/src_bbtm_gen/common/flows/subs/NON_VOLATILE_MEMORY_END.flow"
+                    //sh "${env.WORKSPACE}/TVIIBE2M/mc_change_pkg.sh 176_lqfp_x32"
+                }
+            }
+        }
+ 
+        stage('Build and Run') {
+            steps {
+                node('smartest8-sin-vdi') {
+                    wrap([$class: 'Xvnc']) {
+                        withEnv(['XOC_LEVEL_DEPENDENT_TIMING_DISABLED=1', 'XOC_SIMULATE_RD_ENV=1']) {
+                            adv93kPrepare()
+                            adv93kCreateWorkspace createWorkspaceMode: 'auto',
+                                                smarTest8Projects: [[projectPath: '']]
+                            adv93kBuildWorkspace smarTestVersion: "${env.SmartTestVer}"
+                            adv93kStartTesterSession modelFile: "${env.WORKSPACE}/${env.modelFile}",
+                                                smarTestVersion: "${env.SmartTestVer}",
+                                                executionMode: "${env.ExecutionMode}",
+                                                returnStdout: true
+                            adv93kActivateTestProgram testProgram: "${env.TestpgmRelativePath}"
+                            adv93kLoadTestProgram testProgram: "${env.TestpgmRelativePath}"
+                            adv93kBuildTestProgram()
+                            adv93kRunTestProgram([[datalogProcessing: [drlPath: '',
+                                            logASCII: true, logEDL: true,
+                                            logSTDF: true, logSummary: true],
+                                            executionSites: 'ALL',
+                                            numberOfExecutions: '1',
+                                            testProgram: "${env.TestpgmRelativePath}",
+                                            waitTimeBetweenExecution: '1']])
+                            adv93kEndTesterSession()
+                            adv93kCleanUp()
+                        }
+                    }
+                }
+            }
+        }
+ 
+        stage('Upload Artifacts') {
+            steps    {
+                node('smartest8-sin-vdi') {
+                    rtUpload(
+                            serverId : 'artifactory',
+                            spec: """{"files": [
+                                        {
+                                            "pattern": "${env.WORKSPACE}/build_${env.BUILD_NUMBER}/*.stdf",
+                                            "target": "${env.artifactory_repo}/smartci/${device_name}/build_${env.BUILD_NUMBER}/"
+                                        }]
+                                    }""",
+                            buildName: 'report-artifactory',
+                            buildNumber: env.BUILD_NUMBER
+                    )
+                }
+            }
+        }
+		stage('Analyze Results') {
+            steps {
+                echo("Analyze Results")
+            }
+        }
+    }
+ 
+    post {
+        success {
+            emailext body: "Hi,\n\n The build '${env.BUILD_NUMBER}' for ${env.BRANCH_NAME} branch has finished with the status ${currentBuild.currentResult}.\n\nArtifacts for this build can be found in the below link: \n ${env.artifacts_url}/${env.artifactory_repo}/smartci/${device_name}/build_${env.BUILD_NUMBER}/ \n\nFor more information about the build, please check the following details:\nBUILD_URL: ${env.BUILD_URL}\n\n--Test Framework Team\n",
+                subject: "${env.TestProgram} ${env.ExecutionMode} regression status for ${env.BRANCH_NAME} build_${env.BUILD_NUMBER} ${currentBuild.currentResult}",
+                mimeType: 'text/plain',
+                to: 'Ker.Artiaga@infineon.com'
+        }
+    }
+}
